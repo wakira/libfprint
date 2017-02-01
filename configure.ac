@@ -23,7 +23,7 @@ AC_SUBST(lt_major)
 AC_SUBST(lt_revision)
 AC_SUBST(lt_age)
 
-all_drivers="upekts upektc upeksonly vcom5s uru4000 fdu2000 aes1610 aes1660 aes2501 aes2550 aes2660 aes3500 aes4000 vfs101 vfs301 vfs5011 upektc_img etes603 vfs0050 elan"
+all_drivers="upekts upektc upeksonly vcom5s uru4000 fdu2000 aes1610 aes1660 aes2501 aes2550 aes2660 aes3500 aes4000 vfs101 vfs301 vfs5011 upektc_img etes603 vfs0050 vfs0090 elan"
 
 require_imaging='no'
 require_aeslib='no'
@@ -49,6 +49,7 @@ enable_vfs5011='no'
 enable_upektc_img='no'
 enable_etes603='no'
 enable_vfs0050='no'
+enable_vfs0090='no'
 enable_elan='no'
 
 AC_ARG_WITH([drivers],[AS_HELP_STRING([--with-drivers],
@@ -156,6 +157,9 @@ for driver in `echo ${drivers} | sed -e 's/,/ /g' -e 's/,$//g'`; do
 			AC_DEFINE([ENABLE_VFS0050], [], [Build Validity VFS0050 driver])
 			enable_vfs0050="yes"
 		;;
+		vfs0090)
+			AC_DEFINE([ENABLE_VFS0090], [], [Build Validity VFS0090 driver])
+			enable_vfs0090="yes"
 		elan)
 			AC_DEFINE([ENABLE_ELAN], [], [Build Elan driver])
 			enable_elan="yes"
@@ -186,6 +190,7 @@ AM_CONDITIONAL([ENABLE_VFS5011], [test "$enable_vfs5011" = "yes"])
 AM_CONDITIONAL([ENABLE_UPEKTC_IMG], [test "$enable_upektc_img" = "yes"])
 AM_CONDITIONAL([ENABLE_ETES603], [test "$enable_etes603" = "yes"])
 AM_CONDITIONAL([ENABLE_VFS0050], [test "$enable_vfs0050" = "yes"])
+AM_CONDITIONAL([ENABLE_VFS0090], [test "$enable_vfs0090" = "yes"])
 AM_CONDITIONAL([ENABLE_ELAN], [test "$enable_elan" = "yes"])
 
 
@@ -412,6 +417,11 @@ if test x$enable_vfs0050 != xno ; then
 	AC_MSG_NOTICE([** vfs0050 driver enabled])
 else
 	AC_MSG_NOTICE([   vfs0050 driver disabled])
+fi
+if test x$enable_vfs0090 != xno ; then
+	AC_MSG_NOTICE([** vfs0090 driver enabled])
+else
+	AC_MSG_NOTICE([   vfs0090 driver disabled])
 fi
 if test x$enable_elan != xno ; then
 	AC_MSG_NOTICE([** elan driver enabled])

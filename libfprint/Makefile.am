@@ -22,6 +22,7 @@ VFS5011_SRC = drivers/vfs5011.c drivers/vfs5011_proto.h
 UPEKTC_IMG_SRC = drivers/upektc_img.c drivers/upektc_img.h
 ETES603_SRC = drivers/etes603.c
 VFS0050_SRC = drivers/vfs0050.c drivers/vfs0050.h
+VFS0090_SRC = drivers/vfs0090.c drivers/vfs0090.h
 ELAN_SRC = drivers/elan.c drivers/elan.h
 
 EXTRA_DIST = \
@@ -190,6 +191,10 @@ endif
 
 if ENABLE_VFS0050
 DRIVER_SRC += $(VFS0050_SRC)
+endif
+
+if ENABLE_VFS0090
+DRIVER_SRC += $(VFS0090_SRC)
 endif
 
 if ENABLE_ELAN
