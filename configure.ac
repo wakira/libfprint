@@ -29,6 +29,7 @@ require_imaging='no'
 require_aeslib='no'
 require_aesX660='no'
 require_aes3k='no'
+require_openssl='no'
 enable_upeke2='no'
 enable_upekts='no'
 enable_upektc='no'
@@ -160,6 +161,8 @@ for driver in `echo ${drivers} | sed -e 's/,/ /g' -e 's/,$//g'`; do
 		vfs0090)
 			AC_DEFINE([ENABLE_VFS0090], [], [Build Validity VFS0090 driver])
 			enable_vfs0090="yes"
+			require_openssl="yes"
+		;;
 		elan)
 			AC_DEFINE([ENABLE_ELAN], [], [Build Elan driver])
 			enable_elan="yes"
@@ -184,6 +187,7 @@ AM_CONDITIONAL([ENABLE_AES4000], [test "$enable_aes4000" = "yes"])
 AM_CONDITIONAL([REQUIRE_AESLIB], [test "$require_aeslib" = "yes"])
 AM_CONDITIONAL([REQUIRE_AESX660], [test "$require_aesX660" = "yes"])
 AM_CONDITIONAL([REQUIRE_AES3K], [test "$require_aes3k" = "yes"])
+AM_CONDITIONAL([REQUIRE_OPENSSL], [test "$require_openssl" = "yes"])
 AM_CONDITIONAL([ENABLE_VFS101], [test "$enable_vfs101" = "yes"])
 AM_CONDITIONAL([ENABLE_VFS301], [test "$enable_vfs301" = "yes"])
 AM_CONDITIONAL([ENABLE_VFS5011], [test "$enable_vfs5011" = "yes"])
@@ -238,6 +242,13 @@ if test "$require_imaging" = "yes"; then
 	PKG_CHECK_MODULES(IMAGING, pixman-1, [pixman_found=yes], [pixman_found=no])
 	if test "$pixman_found" != "yes"; then
 		AC_MSG_ERROR([pixman is required for imaging support])
+	fi
+fi
+
+if test "$require_openssl" = "yes"; then
+	PKG_CHECK_MODULES(OPENSSL, openssl, [openssl_found=yes], [openssl_found=no])
+	if test "$openssl_found" != "yes"; then
+		AC_MSG_ERROR([openssl is required by a driver])
 	fi
 fi
 
@@ -442,6 +453,11 @@ if test x$require_aes3k != xno ; then
 	AC_MSG_NOTICE([** aes3k common routines enabled])
 else
 	AC_MSG_NOTICE([   aes3k common routines disabled])
+fi
+if test x$require_openssl != xno ; then
+	AC_MSG_NOTICE([** openssl library enabled])
+else
+	AC_MSG_NOTICE([   openssl library disabled])
 fi
 
 AC_CONFIG_FILES([libfprint.pc] [Makefile] [libfprint/Makefile] [examples/Makefile] [doc/Makefile])

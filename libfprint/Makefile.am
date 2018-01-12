@@ -46,6 +46,7 @@ EXTRA_DIST = \
 	$(UPEKTC_IMG_SRC)	\
 	$(ETES603_SRC)		\
 	$(VFS0050_SRC)		\
+	$(VFS0090_SRC)		\
 	$(ELAN_SRC)		\
 	drivers/aesx660.c	\
 	drivers/aesx660.h	\
@@ -205,6 +206,11 @@ if REQUIRE_PIXMAN
 OTHER_SRC += pixman.c
 libfprint_la_CFLAGS += $(IMAGING_CFLAGS)
 libfprint_la_LIBADD += $(IMAGING_LIBS)
+endif
+
+if REQUIRE_OPENSSL
+libfprint_la_CFLAGS += $(OPENSSL_CFLAGS)
+libfprint_la_LIBADD += $(OPENSSL_LIBS)
 endif
 
 if REQUIRE_AESLIB
