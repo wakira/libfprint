@@ -81,6 +81,10 @@ foreach driver: drivers
         if not openssl_dep.found()
             error('OpenSSL is required for the Validity VFS0090 driver')
         endif
+        imaging_dep = dependency('pixman-1', required: false)
+        if not imaging_dep.found()
+            error('pixman is required for imaging support')
+        endif
     endif
     if not all_drivers.contains(driver)
         error('Invalid driver \'' + driver + '\'')
