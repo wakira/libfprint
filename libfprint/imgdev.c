@@ -20,6 +20,7 @@
 #include <errno.h>
 
 #include <glib.h>
+#include <bozorth.h>
 
 #include "fp_internal.h"
 
@@ -124,6 +125,12 @@ void fpi_imgdev_report_finger_status(struct fp_img_dev *imgdev,
 	int r = imgdev->action_result;
 	struct fp_print_data *data = imgdev->acquire_data;
 	struct fp_img *img = imgdev->acquire_img;
+	struct fp_print_data *print;
+	struct fp_print_data_item *item;
+	print = fpi_print_data_new(imgdev->dev);
+	item = fpi_print_data_item_new(sizeof(struct xyt_struct));
+	print->type = PRINT_DATA_NBIS_MINUTIAE;
+	print->prints = g_slist_prepend(print->prints, item);
 
 	fp_dbg(present ? "finger on sensor" : "finger removed");
 
@@ -134,7 +141,7 @@ void fpi_imgdev_report_finger_status(struct fp_img_dev *imgdev,
 	} else if (present
 			|| imgdev->action_state != IMG_ACQUIRE_STATE_AWAIT_FINGER_OFF) {
 		fp_dbg("ignoring status report");
-		return;
+//		return;
 	}
 
 	/* clear these before reporting results to avoid complications with
@@ -146,7 +153,7 @@ void fpi_imgdev_report_finger_status(struct fp_img_dev *imgdev,
 	switch (imgdev->action) {
 	case IMG_ACTION_ENROLL:
 		fp_dbg("reporting enroll result");
-		data = imgdev->enroll_data;
+		data = print; //imgdev->enroll_data;
 		if (r == FP_ENROLL_COMPLETE) {
 			imgdev->enroll_data = NULL;
 		}

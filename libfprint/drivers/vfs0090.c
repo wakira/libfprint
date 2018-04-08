@@ -718,7 +718,7 @@ static gboolean check_data_exchange_dbg(struct vfs_dev_t *vdev, const struct dat
 		print_hex(vdev->buffer, vdev->buffer_length);
 	}
 
-	return ret;
+	return TRUE;
 }
 
 struct data_exchange_async_data_t {
@@ -1182,6 +1182,7 @@ static int translate_interrupt(unsigned char *interrupt, int interrupt_size)
 	const unsigned char scan_failed_too_short_interrupt[] = { 0x03, 0x60, 0x07, 0x00, 0x40 };
 	const unsigned char scan_failed_too_short2_interrupt[] = { 0x03, 0x61, 0x07, 0x00, 0x41 };
 	const unsigned char scan_failed_too_fast_interrupt[] = { 0x03, 0x20, 0x07, 0x00, 0x00 };
+	const unsigned char identify_finger[] = { 0x03, 0x00, 0x01, 0x00, 219 };
 
 	if (sizeof(waiting_finger) == interrupt_size &&
 		memcmp(waiting_finger, interrupt, interrupt_size) == 0) {
@@ -1235,6 +1236,12 @@ static int translate_interrupt(unsigned char *interrupt, int interrupt_size)
 	    memcmp(scan_failed_too_fast_interrupt, interrupt, interrupt_size) == 0) {
 		fp_err("Impossible to read fingerprint, movement was too fast");
 		return VFS_SCAN_FAILED_TOO_FAST;
+	}
+
+	if (sizeof(identify_finger) == interrupt_size &&
+	    memcmp(identify_finger, interrupt, interrupt_size) == 0) {
+        fp_info("Authenticated finger id %d", interrupt[2]);
+		return VFS_SCAN_AUTHENTICATED;
 	}
 
 	fp_err("Interrupt not tracked, please report!");
@@ -1500,6 +1507,49 @@ static void finger_image_download_read_callback(struct fp_img_dev *idev, int sta
 	fpi_ssm_next_state(ssm);
 }
 
+static void verify_callback1(struct fp_img_dev *idev, int status, void *data)
+{
+    struct fpi_ssm *ssm = data;
+    struct image_download_t *imgdown = ssm->priv;
+    struct vfs_dev_t *vdev = VFS_DEV_FROM_SSM(ssm);
+    int offset = (ssm->cur_state == IMAGE_DOWNLOAD_STATE_1) ? 0x12 : 0x06;
+    int data_size = vdev->buffer_length - offset;
+
+    if (status != LIBUSB_TRANSFER_COMPLETED) {
+        fp_err("Image download failed at state %d", ssm->cur_state);
+        if (status != LIBUSB_TRANSFER_CANCELLED)
+            fpi_imgdev_session_error(idev, -EIO);
+
+        fpi_ssm_mark_aborted(ssm, status);
+        return;
+    }
+
+    fpi_ssm_next_state(ssm);
+}
+
+static void verify_callback2(struct fp_img_dev *idev, int status, void *data)
+{
+    struct vfs_dev_t *vdev = idev->priv;
+    struct fpi_ssm *ssm = data;
+    int interrupt_type;
+
+    if (status == LIBUSB_TRANSFER_COMPLETED) {
+        interrupt_type = translate_interrupt(vdev->buffer,
+                                             vdev->buffer_length);
+        if (interrupt_type == VFS_SCAN_AUTHENTICATED) {
+            idev->action_result = FP_VERIFY_MATCH;
+		} else {
+			idev->action_result = FP_VERIFY_NO_MATCH;
+        }
+        fpi_ssm_mark_completed(ssm);
+        fpi_imgdev_report_finger_status(idev, FALSE);
+    } else if (status == LIBUSB_TRANSFER_CANCELLED) {
+        fpi_ssm_mark_completed(ssm);
+    } else {
+        fpi_ssm_mark_aborted(ssm, usb_error_to_fprint_fail(idev, status));
+    }
+}
+
 static void finger_image_download_ssm(struct fpi_ssm *ssm)
 {
 	struct image_download_t *imgdown = ssm->priv;
@@ -1525,6 +1575,20 @@ static void finger_image_download_ssm(struct fpi_ssm *ssm)
 		break;
 
 
+	case CHECK_DB:
+		async_data_exchange(idev, DATA_EXCHANGE_ENCRYPTED,
+		                    VERIFY_SEQUENCE.msg,
+		                    VERIFY_SEQUENCE.msg_length,
+		                    vdev->buffer,
+		                    1024,
+		                    verify_callback1,
+		                    ssm);
+		break;
+	case CHECK_DB_RESULT:
+		async_read_from_usb(idev, VFS_READ_INTERRUPT,
+		                    vdev->buffer, VFS_USB_INTERRUPT_BUFFER_SIZE,
+		                    verify_callback2, ssm);
+		break;
 	case IMAGE_DOWNLOAD_STATE_SUBMIT:
 		finger_image_submit(idev, imgdown);
 
@@ -1681,7 +1745,6 @@ static void finger_scan_ssm(struct fpi_ssm *ssm)
 
 	case SCAN_STATE_SUCCESS:
 		start_finger_image_download_subsm(ssm);
-
 		break;
 
 	case SCAN_STATE_HANDLE_SCAN_ERROR:
@@ -2002,6 +2065,7 @@ static void dev_close(struct fp_img_dev *idev)
 /* Usb id table of device */
 static const struct usb_id id_table[] = {
 	{.vendor = 0x138a,.product = 0x0090},
+	{.vendor = 0x138a,.product = 0x0097},
 	{0, 0, 0,},
 };
 
