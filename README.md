@@ -1,5 +1,5 @@
-## Validity Sensor `138a:0090` libfprint driver
-#### A linux driver for 2016 ThinkPad's fingerprint readers
+## Validity Sensor `138a:0097` libfprint driver
+#### A linux driver for 2017 ThinkPad's fingerprint readers
 
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/dYe8eKaoUSE/0.jpg)](https://www.youtube.com/watch?v=dYe8eKaoUSE)`
 
