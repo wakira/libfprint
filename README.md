@@ -1,6 +1,13 @@
 ## Validity Sensor `138a:0097` libfprint driver
 #### A linux driver for 2017 ThinkPad's fingerprint readers
 
+Requires to have the fingers enrolled (for example, in Windows).
+Consider the changes made to make it work:
+
+- Returns a fake print on enrollment
+- Authenticates if the device reports a match
+- Ignores errors
+
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/dYe8eKaoUSE/0.jpg)](https://www.youtube.com/watch?v=dYe8eKaoUSE)`
 
 Thanks to the amazing work that [nmikhailov](https://github.com/nmikhailov) did in his [prototype](https://github.com/nmikhailov/Validity90/), I spent some time in getting a libfprint driver for the `138a:0090` device up...
