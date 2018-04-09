@@ -2,11 +2,17 @@
 #### A linux driver for 2017 ThinkPad's fingerprint readers
 
 Requires to have the fingers enrolled (for example, in Windows).
+Tested with fingerprint-gui, Ubuntu 18.04 to authenticate sudo and gdm.
 Consider the changes made to make it work:
 
 - Returns a fake print on enrollment
 - Authenticates if the device reports a match
 - Ignores errors
+
+When testing the driver, you might need to set permissions on the device
+
+    sudo chmod og+rwx  /dev/bus/usb/001/006
+    sudo chmod o+r /sys/class/dmi/id/product_serial
 
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/dYe8eKaoUSE/0.jpg)](https://www.youtube.com/watch?v=dYe8eKaoUSE)`
 
