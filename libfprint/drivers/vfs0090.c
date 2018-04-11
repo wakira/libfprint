@@ -1182,7 +1182,7 @@ static int translate_interrupt(unsigned char *interrupt, int interrupt_size)
 	const unsigned char scan_failed_too_short_interrupt[] = { 0x03, 0x60, 0x07, 0x00, 0x40 };
 	const unsigned char scan_failed_too_short2_interrupt[] = { 0x03, 0x61, 0x07, 0x00, 0x41 };
 	const unsigned char scan_failed_too_fast_interrupt[] = { 0x03, 0x20, 0x07, 0x00, 0x00 };
-	const unsigned char identify_finger[] = { 0x03, 0x00, 0x01, 0x00, 219 };
+	const unsigned char finger_authenticated_interrupt[] = { 0x03, 0x00, 0x01, 0x00, 0xDB }; // 0x01 is the finger id
 
 	if (sizeof(waiting_finger) == interrupt_size &&
 		memcmp(waiting_finger, interrupt, interrupt_size) == 0) {
@@ -1238,8 +1238,9 @@ static int translate_interrupt(unsigned char *interrupt, int interrupt_size)
 		return VFS_SCAN_FAILED_TOO_FAST;
 	}
 
-	if (sizeof(identify_finger) == interrupt_size &&
-	    memcmp(identify_finger, interrupt, interrupt_size) == 0) {
+	if (sizeof(finger_authenticated_interrupt) == interrupt_size &&
+		memcmp(finger_authenticated_interrupt, interrupt, 2) == 0 &&
+		memcmp(&finger_authenticated_interrupt[3], &interrupt[3], 2) == 0) {
         fp_info("Authenticated finger id %d", interrupt[2]);
 		return VFS_SCAN_AUTHENTICATED;
 	}
