@@ -1,5 +1,5 @@
 project('libfprint', [ 'c', 'cpp' ],
-        version: '0.8.1',
+        version: '0.99.0',
         license: 'LGPLv2.1+',
         default_options: [
           'buildtype=debugoptimized',
@@ -52,9 +52,13 @@ if drivers == [ 'all' ]
     drivers = all_drivers
 endif
 
-nss_dep = []
-openssl_dep = []
-imaging_dep = []
+if drivers.length() == 0 or drivers[0] == ''
+    error('Cannot build libfprint without drivers, please specify a valid value for the drivers option')
+endif
+
+nss_dep = dependency('', required: false)
+openssl_dep = dependency('', required: false)
+imaging_dep = dependency('', required: false)
 foreach driver: drivers
     if driver == 'uru4000'
         nss_dep = dependency('nss', required: false)
@@ -118,6 +122,15 @@ if get_option('x11-examples')
     endif
 endif
 
+if get_option('gtk-examples')
+    gnome = import('gnome')
+
+    gtk_dep = dependency('gtk+-3.0', required: false)
+    if not gtk_dep.found()
+        error('GTK+ 3.x is required for GTK+ examples')
+    endif
+endif
+
 libfprint_conf.set('API_EXPORTED', '__attribute__((visibility("default")))')
 configure_file(output: 'config.h', configuration: libfprint_conf)
 
@@ -126,6 +139,9 @@ subdir('examples')
 if get_option('doc')
     gnome = import('gnome')
     subdir('doc')
+endif
+if get_option('gtk-examples')
+    subdir('demo')
 endif
 
 pkgconfig = import('pkgconfig')
