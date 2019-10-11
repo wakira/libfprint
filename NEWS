@@ -1,6 +1,63 @@
 This file lists notable changes in each release. For the full history of all
 changes, see ChangeLog.
 
+2018-12-14: v0.99.0 release
+* Library:
+  - All the internal API for device driver writers is now covered by the
+    documentation and has been enhanced to make it easier to write drivers
+  - Update internal NBIS fingerprint data processing library to one that's
+    nearly 10 years newer
+  - Re-add accessor for minutia coordinates which was used in the very
+    old fprint_demo program, but also by our new GTK+ test program (see below)
+  - Fix a crash when too many minutiae were detected in a capture
+
+* Drivers:
+  - Support more devices in the Elan driver, stability improvements
+
+* Tools:
+  - Add a test GTK+ application that will eventually be used for testing
+    drivers without modifying the OS installed version. Note that this
+    application currently requires manually changing permissions of USB
+    devices, this will be fixed when the infrastructure exists to access
+    those devices without additional permissions, as a normal user.
+
+2018-07-15: v0.8.2 release
+* Drivers:
+  - Add USB ID for TNP Nano USB Fingerprint Reader
+  - Fix UPEKTS enrollment never finishing on some devices
+
+* Library:
+  - Fix fp_get_pollfds() retval type, a small ABI change
+  - Downgrade fatal errors to run-time warnings, as a number of drivers
+    used to throw silent errors and we made them fatal. Those will now
+    be visible warnings, hopefully helping with fixing them.
+
+2018-06-12: v0.8.1 release
+- Brown paperbag release to install the udev rules file in the correct
+  directory if the udev pkg-config file doesn't have a trailing slash
+
+2018-06-12: v0.8.0 release
+- Port to meson as the build system
+- Port documentation to gtk-doc
+
+* Drivers:
+  - Add Elan driver
+  - Increase threshold to detect encryption on URU4000 devices
+  - Remove already replaced UPEKE2 driver
+  - Fix possible crash caused by vfs5011 when no lines were captured
+
+* Library:
+  - Fix a number of memory and file descriptor leaks and warnings
+  - Make NSS (and URU4000) driver optional
+  - Fix assembling of frames for non-reverse and non reverse stripes
+  - Split internal private header to clarify drivers API
+  - Simplify logging system, now all the builds can be used to output
+    debug information
+  - Mark fp_dscv_print functions as deprecated
+
+* Udev rules:
+  - Add some unsupported devices to the whitelist
+
 2017-05-14: v0.7.0 release
 * Drivers:
   - Add VFS0050 driver

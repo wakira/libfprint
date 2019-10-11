@@ -17,15 +17,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <errno.h>
-#include <stdlib.h>
-#include <string.h>
-
 #define FP_COMPONENT "vfs101"
 
-#include <fp_internal.h>
-
-#include "driver_ids.h"
+#include "drivers_api.h"
 
 /* Input-Output usb endpoint */
 #define EP_IN(n)	(n | LIBUSB_ENDPOINT_IN)
@@ -62,7 +56,7 @@
 #define VFS_IMG_MIN_IMAGE_LEVEL	144
 
 /* Best image contrast */
-#define VFS_IMG_BEST_CONRAST	128
+#define VFS_IMG_BEST_CONTRAST	128
 
 /* Device parameters address */
 #define VFS_PAR_000E			0x000e
@@ -110,9 +104,6 @@ struct vfs101_dev
 
 	/* Ignore usb error */
 	int ignore_error;
-
-	/* Timeout */
-	struct fpi_timeout *timeout;
 
 	/* Loop counter */
 	int counter;
@@ -190,7 +181,7 @@ static int result_code(struct fp_img_dev *dev, int result)
 		return result;
 
 	/* Return result code */
-	if (dev->action == IMG_ACTION_ENROLL)
+	if (fpi_imgdev_get_action(dev) == IMG_ACTION_ENROLL)
 		return result_codes[0][result];
 	else
 		return result_codes[1][result];
@@ -205,9 +196,9 @@ static int result_code(struct fp_img_dev *dev, int result)
 /* Callback of asynchronous send */
 static void async_send_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	/* Cleanup transfer */
 	vdev->transfer = NULL;
@@ -220,7 +211,7 @@ static void async_send_cb(struct libusb_transfer *transfer)
 			/* Transfer not completed, return IO error */
 			fp_err("transfer not completed, status = %d", transfer->status);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 
@@ -230,7 +221,7 @@ static void async_send_cb(struct libusb_transfer *transfer)
 			fp_err("length mismatch, got %d, expected %d",
 				transfer->actual_length, transfer->length);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 	}
@@ -248,22 +239,15 @@ out:
 }
 
 /* Submit asynchronous send */
-static void async_send(struct fpi_ssm *ssm)
+static void
+async_send(fpi_ssm           *ssm,
+	   struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	int r;
 
 	/* Allocation of transfer */
-	vdev->transfer = libusb_alloc_transfer(0);
-	if (!vdev->transfer)
-	{
-		/* Allocation transfer failed, return no memory error */
-		fp_err("allocation of usb transfer failed");
-		fpi_imgdev_session_error(dev, -ENOMEM);
-		fpi_ssm_mark_aborted(ssm, -ENOMEM);
-		return;
-	}
+	vdev->transfer = fpi_usb_alloc();
 
 	/* Put sequential number into the buffer */
 	vdev->seqnum++;
@@ -271,7 +255,7 @@ static void async_send(struct fpi_ssm *ssm)
 	vdev->buffer[1] = byte(1, vdev->seqnum);
 
 	/* Prepare bulk transfer */
-	libusb_fill_bulk_transfer(vdev->transfer, dev->udev, EP_OUT(1), vdev->buffer, vdev->length, async_send_cb, ssm, BULK_TIMEOUT);
+	libusb_fill_bulk_transfer(vdev->transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), EP_OUT(1), vdev->buffer, vdev->length, async_send_cb, ssm, BULK_TIMEOUT);
 
 	/* Submit transfer */
 	r = libusb_submit_transfer(vdev->transfer);
@@ -281,7 +265,7 @@ static void async_send(struct fpi_ssm *ssm)
 		libusb_free_transfer(vdev->transfer);
 		fp_err("submit of usb transfer failed");
 		fpi_imgdev_session_error(dev, -EIO);
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 		return;
 	}
 }
@@ -289,9 +273,9 @@ static void async_send(struct fpi_ssm *ssm)
 /* Callback of asynchronous recv */
 static void async_recv_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	/* Cleanup transfer */
 	vdev->transfer = NULL;
@@ -304,7 +288,7 @@ static void async_recv_cb(struct libusb_transfer *transfer)
 			/* Transfer not completed, return IO error */
 			fp_err("transfer not completed, status = %d", transfer->status);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 
@@ -314,7 +298,7 @@ static void async_recv_cb(struct libusb_transfer *transfer)
 			fp_err("seqnum mismatch, got %04x, expected %04x",
 				get_seqnum(vdev->buffer[1], vdev->buffer[0]), vdev->seqnum);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 	}
@@ -335,25 +319,18 @@ out:
 }
 
 /* Submit asynchronous recv */
-static void async_recv(struct fpi_ssm *ssm)
+static void
+async_recv(fpi_ssm           *ssm,
+	   struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	int r;
 
 	/* Allocation of transfer */
-	vdev->transfer = libusb_alloc_transfer(0);
-	if (!vdev->transfer)
-	{
-		/* Allocation transfer failed, return no memory error */
-		fp_err("allocation of usb transfer failed");
-		fpi_imgdev_session_error(dev, -ENOMEM);
-		fpi_ssm_mark_aborted(ssm, -ENOMEM);
-		return;
-	}
+	vdev->transfer = fpi_usb_alloc();
 
 	/* Prepare bulk transfer */
-	libusb_fill_bulk_transfer(vdev->transfer, dev->udev, EP_IN(1), vdev->buffer, 0x0f, async_recv_cb, ssm, BULK_TIMEOUT);
+	libusb_fill_bulk_transfer(vdev->transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), EP_IN(1), vdev->buffer, 0x0f, async_recv_cb, ssm, BULK_TIMEOUT);
 
 	/* Submit transfer */
 	r = libusb_submit_transfer(vdev->transfer);
@@ -363,19 +340,19 @@ static void async_recv(struct fpi_ssm *ssm)
 		libusb_free_transfer(vdev->transfer);
 		fp_err("submit of usb transfer failed");
 		fpi_imgdev_session_error(dev, -EIO);
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 		return;
 	}
 }
 
-static void async_load(struct fpi_ssm *ssm);
+static void async_load(fpi_ssm *ssm, struct fp_img_dev *dev);
 
 /* Callback of asynchronous load */
 static void async_load_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	/* Cleanup transfer */
 	vdev->transfer = NULL;
@@ -388,7 +365,7 @@ static void async_load_cb(struct libusb_transfer *transfer)
 			/* Transfer not completed */
 			fp_err("transfer not completed, status = %d, length = %d", transfer->status, vdev->length);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 
@@ -397,7 +374,7 @@ static void async_load_cb(struct libusb_transfer *transfer)
 			/* Received incomplete frame, return protocol error */
 			fp_err("received incomplete frame");
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			goto out;
 		}
 	}
@@ -412,12 +389,12 @@ static void async_load_cb(struct libusb_transfer *transfer)
 			/* Buffer full, image too large, return no memory error */
 			fp_err("buffer full, image too large");
 			fpi_imgdev_session_error(dev, -ENOMEM);
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
+			fpi_ssm_mark_failed(ssm, -ENOMEM);
 			goto out;
 		}
 		else
 			/* Image load not completed, submit another asynchronous load */
-			async_load(ssm);
+			async_load(ssm, dev);
 	}
 	else
 	{
@@ -436,29 +413,22 @@ out:
 }
 
 /* Submit asynchronous load */
-static void async_load(struct fpi_ssm *ssm)
+static void
+async_load(fpi_ssm           *ssm,
+	   struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	unsigned char *buffer;
 	int r;
 
 	/* Allocation of transfer */
-	vdev->transfer = libusb_alloc_transfer(0);
-	if (!vdev->transfer)
-	{
-		/* Allocation transfer failed, return no memory error */
-		fp_err("allocation of usb transfer failed");
-		fpi_imgdev_session_error(dev, -ENOMEM);
-		fpi_ssm_mark_aborted(ssm, -ENOMEM);
-		return;
-	}
+	vdev->transfer = fpi_usb_alloc();
 
 	/* Append new data into the buffer */
 	buffer = vdev->buffer + vdev->length;
 
 	/* Prepare bulk transfer */
-	libusb_fill_bulk_transfer(vdev->transfer, dev->udev, EP_IN(2), buffer, VFS_BLOCK_SIZE, async_load_cb, ssm, BULK_TIMEOUT);
+	libusb_fill_bulk_transfer(vdev->transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), EP_IN(2), buffer, VFS_BLOCK_SIZE, async_load_cb, ssm, BULK_TIMEOUT);
 
 	/* Submit transfer */
 	r = libusb_submit_transfer(vdev->transfer);
@@ -468,39 +438,23 @@ static void async_load(struct fpi_ssm *ssm)
 		libusb_free_transfer(vdev->transfer);
 		fp_err("submit of usb transfer failed");
 		fpi_imgdev_session_error(dev, -EIO);
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 		return;
 	}
 }
 
-/* Callback of asynchronous sleep */
-static void async_sleep_cb(void *data)
-{
-	struct fpi_ssm *ssm = data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
-
-	/* Cleanup timeout */
-	vdev->timeout = NULL;
-
-	fpi_ssm_next_state(ssm);
-}
-
 /* Submit asynchronous sleep */
-static void async_sleep(unsigned int msec, struct fpi_ssm *ssm)
+static void
+async_sleep(unsigned int       msec,
+	    fpi_ssm           *ssm,
+	    struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
-
-	/* Add timeout */
-	vdev->timeout = fpi_timeout_add(msec, async_sleep_cb, ssm);
-
-	if (vdev->timeout == NULL)
+	if (fpi_timeout_add(msec, fpi_ssm_next_state_timeout_cb, FP_DEV(dev), ssm) == NULL)
 	{
 		/* Failed to add timeout */
 		fp_err("failed to add timeout");
 		fpi_imgdev_session_error(dev, -ETIME);
-		fpi_ssm_mark_aborted(ssm, -ETIME);
+		fpi_ssm_mark_failed(ssm, -ETIME);
 	}
 }
 
@@ -513,28 +467,31 @@ enum
 };
 
 /* Exec swap sequential state machine */
-static void m_swap_state(struct fpi_ssm *ssm)
+static void m_swap_state(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	switch (ssm->cur_state)
+	switch (fpi_ssm_get_cur_state(ssm))
 	{
 	case M_SWAP_SEND:
 		/* Send data */
-		async_send(ssm);
+		async_send(ssm, user_data);
 		break;
 
 	case M_SWAP_RECV:
 		/* Recv response */
-		async_recv(ssm);
+		async_recv(ssm, user_data);
 		break;
 	}
 }
 
 /* Start swap sequential state machine */
-static void m_swap(struct fpi_ssm *ssm, unsigned char *data, size_t length)
+static void
+m_swap(fpi_ssm           *ssm,
+       struct fp_img_dev *dev,
+       unsigned char     *data,
+       size_t             length)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
-	struct fpi_ssm *subsm;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	fpi_ssm *subsm;
 
 	/* Prepare data for sending */
 	memcpy(vdev->buffer, data, length);
@@ -542,13 +499,16 @@ static void m_swap(struct fpi_ssm *ssm, unsigned char *data, size_t length)
 	vdev->length = length;
 
 	/* Start swap ssm */
-	subsm = fpi_ssm_new(dev->dev, m_swap_state, M_SWAP_NUM_STATES);
-	subsm->priv = dev;
+	subsm = fpi_ssm_new(FP_DEV(dev), m_swap_state, M_SWAP_NUM_STATES, dev);
 	fpi_ssm_start_subsm(ssm, subsm);
 }
 
 /* Retrieve fingerprint image */
-static void vfs_get_print(struct fpi_ssm *ssm, unsigned int param, int type)
+static void
+vfs_get_print(fpi_ssm           *ssm,
+	      struct fp_img_dev *dev,
+	      unsigned int       param,
+	      int                type)
 {
 	unsigned char data[2][0x0e] = {
 		{	0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
@@ -564,11 +524,15 @@ static void vfs_get_print(struct fpi_ssm *ssm, unsigned int param, int type)
 	data[type][7] = byte(1, param);
 
 	/* Run swap sequential state machine */
-	m_swap(ssm, data[type], 0x0e);
+	m_swap(ssm, dev, data[type], 0x0e);
 }
 
 /* Set a parameter value on the device */
-static void vfs_set_param(struct fpi_ssm *ssm, unsigned int param, unsigned int value)
+static void
+vfs_set_param(fpi_ssm           *ssm,
+	      struct fp_img_dev *dev,
+	      unsigned int       param,
+	      unsigned int       value)
 {
 	unsigned char data[0x0a] = { 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
@@ -581,22 +545,29 @@ static void vfs_set_param(struct fpi_ssm *ssm, unsigned int param, unsigned int 
 	data[9] = byte(1, value);
 
 	/* Run swap sequential state machine */
-	m_swap(ssm, data, 0x0a);
+	m_swap(ssm, dev, data, 0x0a);
 }
 
 /* Abort previous print */
-static void vfs_abort_print(struct fpi_ssm *ssm)
+static void
+vfs_abort_print(fpi_ssm           *ssm,
+		struct fp_img_dev *dev)
 {
 	unsigned char data[0x06] = { 0x00, 0x00, 0x00, 0x00, 0x0E, 0x00 };
 
-	fp_dbg("");
+	G_DEBUG_HERE();
 
 	/* Run swap sequential state machine */
-	m_swap (ssm, data, 0x06);
+	m_swap (ssm, dev, data, 0x06);
 }
 
 /* Poke a value on a region */
-static void vfs_poke(struct fpi_ssm *ssm, unsigned int addr, unsigned int value, unsigned int size)
+static void
+vfs_poke(fpi_ssm           *ssm,
+	 struct fp_img_dev *dev,
+	 unsigned int       addr,
+	 unsigned int       value,
+	 unsigned int       size)
 {
 	unsigned char data[0x0f] = { 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
@@ -614,27 +585,30 @@ static void vfs_poke(struct fpi_ssm *ssm, unsigned int addr, unsigned int value,
 	data[14] = byte(0, size);
 
 	/* Run swap sequential state machine */
-	m_swap(ssm, data, 0x0f);
+	m_swap(ssm, dev, data, 0x0f);
 }
 
 /* Get current finger state */
-static void vfs_get_finger_state(struct fpi_ssm *ssm)
+static void
+vfs_get_finger_state(fpi_ssm           *ssm,
+		     struct fp_img_dev *dev)
 {
 	unsigned char data[0x06] = { 0x00, 0x00, 0x00, 0x00, 0x16, 0x00 };
 
-	fp_dbg("");
+	G_DEBUG_HERE();
 
 	/* Run swap sequential state machine */
-	m_swap (ssm, data, 0x06);
+	m_swap (ssm, dev, data, 0x06);
 }
 
 /* Load raw image from reader */
-static void vfs_img_load(struct fpi_ssm *ssm)
+static void
+vfs_img_load(fpi_ssm           *ssm,
+	     struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
-	fp_dbg("");
+	G_DEBUG_HERE();
 
 	/* Reset buffer length */
 	vdev->length = 0;
@@ -644,16 +618,16 @@ static void vfs_img_load(struct fpi_ssm *ssm)
 	vdev->height = -1;
 
 	/* Asynchronous load */
-	async_load(ssm);
+	async_load(ssm, dev);
 }
 
 /* Check if action is completed */
 static int action_completed(struct fp_img_dev *dev)
 {
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
-	if ((dev->action == IMG_ACTION_ENROLL) &&
-		(vdev->enroll_stage < dev->dev->nr_enroll_stages))
+	if ((fpi_imgdev_get_action(dev) == IMG_ACTION_ENROLL) &&
+		(vdev->enroll_stage < fp_dev_get_nr_enroll_stages(FP_DEV(dev))))
 		/* Enroll not completed, return false */
 		return FALSE;
 
@@ -760,10 +734,11 @@ static void img_copy(struct vfs101_dev *vdev, struct fp_img *img)
 }
 
 /* Extract fingerpint image from raw data */
-static void img_extract(struct fpi_ssm *ssm)
+static void
+img_extract(fpi_ssm           *ssm,
+	    struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	struct fp_img *img;
 
 	/* Screen image to remove noise and find top and bottom line */
@@ -792,29 +767,34 @@ static void img_extract(struct fpi_ssm *ssm)
 	/* Notify image captured */
 	fpi_imgdev_image_captured(dev, img);
 
+	/* FIXME
+	 * What is this for? The action result, and the enroll stages should
+	 * already be handled in fpi_imgdev_image_captured()
+	 */
+
 	/* Check captured result */
-	if (dev->action_result >= 0 &&
-		dev->action_result != FP_ENROLL_RETRY &&
-		dev->action_result != FP_VERIFY_RETRY)
+	if (fpi_imgdev_get_action_result(dev) >= 0 &&
+		fpi_imgdev_get_action_result(dev) != FP_ENROLL_RETRY &&
+		fpi_imgdev_get_action_result(dev) != FP_VERIFY_RETRY)
 	{
 		/* Image captured, increase enroll stage */
 		vdev->enroll_stage++;
 
 		/* Check if action is completed */
 		if (!action_completed(dev))
-			dev->action_result = FP_ENROLL_PASS;
+			fpi_imgdev_set_action_result(dev, FP_ENROLL_PASS);
 	}
 	else
 	{
 		/* Image capture failed */
-		if (dev->action == IMG_ACTION_ENROLL)
+		if (fpi_imgdev_get_action(dev) == IMG_ACTION_ENROLL)
 			/* Return retry */
-			dev->action_result = result_code(dev, RESULT_RETRY);
+			fpi_imgdev_set_action_result(dev, result_code(dev, RESULT_RETRY));
 		else
 		{
 			/* Return no match */
 			vdev->enroll_stage++;
-			dev->action_result = FP_VERIFY_NO_MATCH;
+			fpi_imgdev_set_action_result(dev, FP_VERIFY_NO_MATCH);
 		}
 	}
 
@@ -876,7 +856,7 @@ static void vfs_check_contrast(struct vfs101_dev *vdev)
 
 	fp_dbg("contrast = %d, level = %ld", vdev->contrast, count);
 
-	if (abs(count - VFS_IMG_BEST_CONRAST) < abs(vdev->best_clevel - VFS_IMG_BEST_CONRAST))
+	if (labs(count - VFS_IMG_BEST_CONTRAST) < abs(vdev->best_clevel - VFS_IMG_BEST_CONTRAST))
 	{
 		/* Better contrast found, use it */
 		vdev->best_contrast = vdev->contrast;
@@ -918,10 +898,10 @@ enum
 };
 
 /* Exec loop sequential state machine */
-static void m_loop_state(struct fpi_ssm *ssm)
+static void m_loop_state(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct fp_img_dev *dev = user_data;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(_dev);
 
 	/* Check action state */
 	if (!vdev->active)
@@ -931,21 +911,21 @@ static void m_loop_state(struct fpi_ssm *ssm)
 		return;
 	}
 
-	switch (ssm->cur_state)
+	switch (fpi_ssm_get_cur_state(ssm))
 	{
 	case M_LOOP_0_GET_PRINT:
 		/* Send get print command to the reader */
-		vfs_get_print(ssm, VFS_BUFFER_HEIGHT, 1);
+		vfs_get_print(ssm, dev, VFS_BUFFER_HEIGHT, 1);
 		break;
 
 	case M_LOOP_0_SLEEP:
 		/* Wait fingerprint scanning */
-		async_sleep(50, ssm);
+		async_sleep(50, ssm, dev);
 		break;
 
 	case M_LOOP_0_GET_STATE:
 		/* Get finger state */
-		vfs_get_finger_state(ssm);
+		vfs_get_finger_state(ssm, dev);
 		break;
 
 	case M_LOOP_0_LOAD_IMAGE:
@@ -960,14 +940,14 @@ static void m_loop_state(struct fpi_ssm *ssm)
 		case VFS_FINGER_PRESENT:
 			/* Load image from reader */
 			vdev->ignore_error = TRUE;
-			vfs_img_load(ssm);
+			vfs_img_load(ssm, dev);
 			break;
 
 		default:
 			/* Unknown state */
 			fp_err("unknown device state 0x%02x", vdev->buffer[0x0a]);
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 			break;
 		}
 		break;
@@ -976,10 +956,10 @@ static void m_loop_state(struct fpi_ssm *ssm)
 		/* Check if image is loaded */
 		if (vdev->height > 0)
 			/* Fingerprint is loaded, extract image from raw data */
-			img_extract(ssm);
+			img_extract(ssm, dev);
 
 		/* Wait handling image */
-		async_sleep(10, ssm);
+		async_sleep(10, ssm, dev);
 		break;
 
 	case M_LOOP_0_CHECK_ACTION:
@@ -999,7 +979,7 @@ static void m_loop_state(struct fpi_ssm *ssm)
 
 	case M_LOOP_1_GET_STATE:
 		/* Get finger state */
-		vfs_get_finger_state(ssm);
+		vfs_get_finger_state(ssm, dev);
 		break;
 
 	case M_LOOP_1_CHECK_STATE:
@@ -1017,14 +997,14 @@ static void m_loop_state(struct fpi_ssm *ssm)
 
 				/* Wait removing finger */
 				vdev->counter++;
-				async_sleep(250, ssm);
+				async_sleep(250, ssm, dev);
 			}
 			else
 			{
 				/* reach max loop counter, return protocol error */
 				fp_err("finger not removed from the scanner");
 				fpi_imgdev_session_error(dev, -EIO);
-				fpi_ssm_mark_aborted(ssm, -EIO);
+				fpi_ssm_mark_failed(ssm, -EIO);
 			}
 		}
 		else
@@ -1055,13 +1035,13 @@ static void m_loop_state(struct fpi_ssm *ssm)
 
 	case M_LOOP_1_GET_PRINT:
 		/* Send get print command to the reader */
-		vfs_get_print(ssm, VFS_BUFFER_HEIGHT, 1);
+		vfs_get_print(ssm, dev, VFS_BUFFER_HEIGHT, 1);
 		break;
 
 	case M_LOOP_1_LOAD_IMAGE:
 		/* Load image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_LOOP_1_LOOP:
@@ -1071,29 +1051,29 @@ static void m_loop_state(struct fpi_ssm *ssm)
 
 	case M_LOOP_1_SLEEP:
 		/* Wait fingerprint scanning */
-		async_sleep(10, ssm);
+		async_sleep(10, ssm, dev);
 		break;
 
 	case M_LOOP_2_ABORT_PRINT:
 		/* Abort print command */
-		vfs_abort_print(ssm);
+		vfs_abort_print(ssm, dev);
 		break;
 
 	case M_LOOP_2_LOAD_IMAGE:
 		/* Load abort image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_LOOP_3_GET_PRINT:
 		/* Get empty image */
-		vfs_get_print(ssm, 0x000a, 0);
+		vfs_get_print(ssm, dev, 0x000a, 0);
 		break;
 
 	case M_LOOP_3_LOAD_IMAGE:
 		/* Load abort image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_LOOP_3_CHECK_IMAGE:
@@ -1107,14 +1087,14 @@ static void m_loop_state(struct fpi_ssm *ssm)
 		{
 			/* Wait aborting */
 			vdev->counter++;
-			async_sleep(100, ssm);
+			async_sleep(100, ssm, dev);
 		}
 		else
 		{
 			/* reach max loop counter, return protocol error */
 			fp_err("waiting abort reach max loop counter");
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 		}
 		break;
 
@@ -1126,7 +1106,7 @@ static void m_loop_state(struct fpi_ssm *ssm)
 }
 
 /* Complete loop sequential state machine */
-static void m_loop_complete(struct fpi_ssm *ssm)
+static void m_loop_complete(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
 	/* Free sequential state machine */
 	fpi_ssm_free(ssm);
@@ -1182,10 +1162,10 @@ enum
 };
 
 /* Exec init sequential state machine */
-static void m_init_state(struct fpi_ssm *ssm)
+static void m_init_state(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
+	struct fp_img_dev *dev = user_data;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(_dev);
 
 	/* Check action state */
 	if (!vdev->active)
@@ -1195,34 +1175,34 @@ static void m_init_state(struct fpi_ssm *ssm)
 		return;
 	}
 
-	switch (ssm->cur_state)
+	switch (fpi_ssm_get_cur_state(ssm))
 	{
 	case M_INIT_0_RECV_DIRTY:
 		/* Recv eventualy dirty data */
 		vdev->ignore_error = TRUE;
-		async_recv(ssm);
+		async_recv(ssm, dev);
 		break;
 
 	case M_INIT_0_ABORT_PRINT:
 		/* Abort print command */
-		vfs_abort_print(ssm);
+		vfs_abort_print(ssm, dev);
 		break;
 
 	case M_INIT_0_LOAD_IMAGE:
 		/* Load abort image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_INIT_1_GET_PRINT:
 		/* Get empty image */
-		vfs_get_print(ssm, 0x000a, 0);
+		vfs_get_print(ssm, dev, 0x000a, 0);
 		break;
 
 	case M_INIT_1_LOAD_IMAGE:
 		/* Load abort image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_INIT_1_CHECK_IMAGE:
@@ -1236,14 +1216,14 @@ static void m_init_state(struct fpi_ssm *ssm)
 		{
 			/* Wait aborting */
 			vdev->counter++;
-			async_sleep(100, ssm);
+			async_sleep(100, ssm, dev);
 		}
 		else
 		{
 			/* reach max loop counter, return protocol error */
 			fp_err("waiting abort reach max loop counter");
 			fpi_imgdev_session_error(dev, -EIO);
-			fpi_ssm_mark_aborted(ssm, -EIO);
+			fpi_ssm_mark_failed(ssm, -EIO);
 		}
 		break;
 
@@ -1254,7 +1234,7 @@ static void m_init_state(struct fpi_ssm *ssm)
 
 	case M_INIT_2_GET_STATE:
 		/* Get finger state */
-		vfs_get_finger_state(ssm);
+		vfs_get_finger_state(ssm, dev);
 		break;
 
 	case M_INIT_2_CHECK_STATE:
@@ -1272,14 +1252,14 @@ static void m_init_state(struct fpi_ssm *ssm)
 
 				/* Wait removing finger */
 				vdev->counter++;
-				async_sleep(250, ssm);
+				async_sleep(250, ssm, dev);
 			}
 			else
 			{
 				/* reach max loop counter, return protocol error */
 				fp_err("finger not removed from the scanner");
 				fpi_imgdev_session_error(dev, -EIO);
-				fpi_ssm_mark_aborted(ssm, -EIO);
+				fpi_ssm_mark_failed(ssm, -EIO);
 			}
 		}
 		else
@@ -1299,13 +1279,13 @@ static void m_init_state(struct fpi_ssm *ssm)
 
 	case M_INIT_2_GET_PRINT:
 		/* Send get print command to the reader */
-		vfs_get_print(ssm, VFS_BUFFER_HEIGHT, 1);
+		vfs_get_print(ssm, dev, VFS_BUFFER_HEIGHT, 1);
 		break;
 
 	case M_INIT_2_LOAD_IMAGE:
 		/* Load unexpected image */
 		vdev->ignore_error = TRUE;
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_INIT_2_LOOP:
@@ -1315,68 +1295,68 @@ static void m_init_state(struct fpi_ssm *ssm)
 
 	case M_INIT_3_SET_000E:
 		/* Set param 0x000e, required for take image */
-		vfs_set_param(ssm, VFS_PAR_000E, VFS_VAL_000E);
+		vfs_set_param(ssm, dev, VFS_PAR_000E, VFS_VAL_000E);
 		break;
 
 	case M_INIT_3_SET_0011:
 		/* Set param 0x0011, required for take image */
-		vfs_set_param(ssm, VFS_PAR_0011, VFS_VAL_0011);
+		vfs_set_param(ssm, dev, VFS_PAR_0011, VFS_VAL_0011);
 		break;
 
 	case M_INIT_3_SET_0076:
 		/* Set param 0x0076, required for use info line */
-		vfs_set_param(ssm, VFS_PAR_0076, VFS_VAL_0076);
+		vfs_set_param(ssm, dev, VFS_PAR_0076, VFS_VAL_0076);
 		break;
 
 	case M_INIT_3_SET_0078:
 		/* Set param 0x0078, required for use info line */
-		vfs_set_param(ssm, VFS_PAR_0078, VFS_VAL_0078);
+		vfs_set_param(ssm, dev, VFS_PAR_0078, VFS_VAL_0078);
 		break;
 
 	case M_INIT_3_SET_THRESHOLD:
 		/* Set threshold */
-		vfs_set_param(ssm, VFS_PAR_THRESHOLD, VFS_VAL_THRESHOLD);
+		vfs_set_param(ssm, dev, VFS_PAR_THRESHOLD, VFS_VAL_THRESHOLD);
 		break;
 
 	case M_INIT_3_SET_STATE3_COUNT:
 		/* Set state 3 count */
-		vfs_set_param(ssm, VFS_PAR_STATE_3, VFS_VAL_STATE_3);
+		vfs_set_param(ssm, dev, VFS_PAR_STATE_3, VFS_VAL_STATE_3);
 		break;
 
 	case M_INIT_3_SET_STATE5_COUNT:
 		/* Set state 5 count */
-		vfs_set_param(ssm, VFS_PAR_STATE_5, VFS_VAL_STATE_5);
+		vfs_set_param(ssm, dev, VFS_PAR_STATE_5, VFS_VAL_STATE_5);
 		break;
 
 	case M_INIT_3_SET_INFO_CONTRAST:
 		/* Set info line contrast */
-		vfs_set_param(ssm, VFS_PAR_INFO_CONTRAST, 10);
+		vfs_set_param(ssm, dev, VFS_PAR_INFO_CONTRAST, 10);
 		break;
 
 	case M_INIT_3_SET_INFO_RATE:
 		/* Set info line rate */
-		vfs_set_param(ssm, VFS_PAR_INFO_RATE, 32);
+		vfs_set_param(ssm, dev, VFS_PAR_INFO_RATE, 32);
 		break;
 
 	case M_INIT_4_SET_EXPOSURE:
 		/* Set exposure level of reader */
-		vfs_poke(ssm, VFS_REG_IMG_EXPOSURE, 0x4000, 0x02);
+		vfs_poke(ssm, dev, VFS_REG_IMG_EXPOSURE, 0x4000, 0x02);
 		vdev->counter = 1;
 		break;
 
 	case M_INIT_4_SET_CONTRAST:
 		/* Set contrast level of reader */
-		vfs_poke(ssm, VFS_REG_IMG_CONTRAST, vdev->contrast, 0x01);
+		vfs_poke(ssm, dev, VFS_REG_IMG_CONTRAST, vdev->contrast, 0x01);
 		break;
 
 	case M_INIT_4_GET_PRINT:
 		/* Get empty image */
-		vfs_get_print(ssm, 0x000a, 0);
+		vfs_get_print(ssm, dev, 0x000a, 0);
 		break;
 
 	case M_INIT_4_LOAD_IMAGE:
 		/* Load empty image */
-		vfs_img_load(ssm);
+		vfs_img_load(ssm, dev);
 		break;
 
 	case M_INIT_4_CHECK_CONTRAST:
@@ -1402,41 +1382,40 @@ static void m_init_state(struct fpi_ssm *ssm)
 
 	case M_INIT_5_SET_EXPOSURE:
 		/* Set exposure level of reader */
-		vfs_poke(ssm, VFS_REG_IMG_EXPOSURE, VFS_VAL_IMG_EXPOSURE, 0x02);
+		vfs_poke(ssm, dev, VFS_REG_IMG_EXPOSURE, VFS_VAL_IMG_EXPOSURE, 0x02);
 		break;
 
 	case M_INIT_5_SET_CONTRAST:
 		/* Set contrast level of reader */
-		vfs_poke(ssm, VFS_REG_IMG_CONTRAST, vdev->contrast, 0x01);
+		vfs_poke(ssm, dev, VFS_REG_IMG_CONTRAST, vdev->contrast, 0x01);
 		break;
 
 	case M_INIT_5_SET_INFO_CONTRAST:
 		/* Set info line contrast */
-		vfs_set_param(ssm, VFS_PAR_INFO_CONTRAST, vdev->contrast);
+		vfs_set_param(ssm, dev, VFS_PAR_INFO_CONTRAST, vdev->contrast);
 		break;
 
 	case M_INIT_5_SET_INFO_RATE:
 		/* Set info line rate */
-		vfs_set_param(ssm, VFS_PAR_INFO_RATE, VFS_VAL_INFO_RATE);
+		vfs_set_param(ssm, dev, VFS_PAR_INFO_RATE, VFS_VAL_INFO_RATE);
 		break;
 	}
 }
 
 /* Complete init sequential state machine */
-static void m_init_complete(struct fpi_ssm *ssm)
+static void m_init_complete(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct vfs101_dev *vdev = dev->priv;
-	struct fpi_ssm *ssm_loop;
+	struct fp_img_dev *dev = user_data;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(_dev);
+	fpi_ssm *ssm_loop;
 
-	if (!ssm->error && vdev->active)
+	if (!fpi_ssm_get_error(ssm) && vdev->active)
 	{
 		/* Notify activate complete */
 		fpi_imgdev_activate_complete(dev, 0);
 
 		/* Start loop ssm */
-		ssm_loop = fpi_ssm_new(dev->dev, m_loop_state, M_LOOP_NUM_STATES);
-		ssm_loop->priv = dev;
+		ssm_loop = fpi_ssm_new(FP_DEV(dev), m_loop_state, M_LOOP_NUM_STATES, dev);
 		fpi_ssm_start(ssm_loop, m_loop_complete);
 	}
 
@@ -1447,8 +1426,8 @@ static void m_init_complete(struct fpi_ssm *ssm)
 /* Activate device */
 static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 {
-	struct vfs101_dev *vdev = dev->priv;
-	struct fpi_ssm *ssm;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	fpi_ssm *ssm;
 
 	/* Check if already active */
 	if (vdev->active)
@@ -1470,8 +1449,7 @@ static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 	vdev->enroll_stage = 0;
 
 	/* Start init ssm */
-	ssm = fpi_ssm_new(dev->dev, m_init_state, M_INIT_NUM_STATES);
-	ssm->priv = dev;
+	ssm = fpi_ssm_new(FP_DEV(dev), m_init_state, M_INIT_NUM_STATES, dev);
 	fpi_ssm_start(ssm, m_init_complete);
 
 	return 0;
@@ -1480,13 +1458,13 @@ static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 /* Deactivate device */
 static void dev_deactivate(struct fp_img_dev *dev)
 {
-	struct vfs101_dev *vdev = dev->priv;
+	struct vfs101_dev *vdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	/* Reset active state */
 	vdev->active = FALSE;
 
 	/* Handle eventualy existing events */
-	while (vdev->transfer || vdev->timeout)
+	while (vdev->transfer)
 		fp_handle_events();
 
 	/* Notify deactivate complete */
@@ -1500,7 +1478,7 @@ static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
 	int r;
 
 	/* Claim usb interface */
-	r = libusb_claim_interface(dev->udev, 0);
+	r = libusb_claim_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
 	if (r < 0)
 	{
 		/* Interface not claimed, return error */
@@ -1511,7 +1489,7 @@ static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
 	/* Initialize private structure */
 	vdev = g_malloc0(sizeof(struct vfs101_dev));
 	vdev->seqnum = -1;
-	dev->priv = vdev;
+	fp_dev_set_instance_data(FP_DEV(dev), vdev);
 
 	/* Notify open complete */
 	fpi_imgdev_open_complete(dev, 0);
@@ -1522,11 +1500,14 @@ static int dev_open(struct fp_img_dev *dev, unsigned long driver_data)
 /* Close device */
 static void dev_close(struct fp_img_dev *dev)
 {
+	struct vfs101_dev *vdev;
+
 	/* Release private structure */
-	g_free(dev->priv);
+	vdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	g_free(vdev);
 
 	/* Release usb interface */
-	libusb_release_interface(dev->udev, 0);
+	libusb_release_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
 
 	/* Notify close complete */
 	fpi_imgdev_close_complete(dev);

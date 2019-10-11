@@ -20,13 +20,8 @@
 
 #define FP_COMPONENT "upektc"
 
-#include <errno.h>
-#include <string.h>
-#include <libusb.h>
-#include <fp_internal.h>
-
+#include "drivers_api.h"
 #include "upektc.h"
-#include "driver_ids.h"
 
 #define UPEKTC_EP_IN (2 | LIBUSB_ENDPOINT_IN)
 #define UPEKTC_EP_OUT (3 | LIBUSB_ENDPOINT_OUT)
@@ -61,10 +56,11 @@ enum activate_states {
 	ACTIVATE_NUM_STATES,
 };
 
-static void upektc_next_init_cmd(struct fpi_ssm *ssm)
+static void
+upektc_next_init_cmd(fpi_ssm           *ssm,
+		     struct fp_img_dev *dev)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct upektc_dev *upekdev = dev->priv;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	upekdev->init_idx += 1;
 	if (upekdev->init_idx == upekdev->setup_commands_len)
@@ -75,70 +71,63 @@ static void upektc_next_init_cmd(struct fpi_ssm *ssm)
 
 static void write_init_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
-	struct upektc_dev *upekdev = dev->priv;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	if ((transfer->status == LIBUSB_TRANSFER_COMPLETED) &&
 		(transfer->length == transfer->actual_length)) {
 		if (upekdev->setup_commands[upekdev->init_idx].response_len)
 			fpi_ssm_next_state(ssm);
 		else
-			upektc_next_init_cmd(ssm);
+			upektc_next_init_cmd(ssm, dev);
 	} else {
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 	}
 	libusb_free_transfer(transfer);
 }
 
 static void read_init_data_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
 
 	if (transfer->status == LIBUSB_TRANSFER_COMPLETED)
-		upektc_next_init_cmd(ssm);
+		upektc_next_init_cmd(ssm, dev);
 	else
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 	g_free(transfer->buffer);
 	libusb_free_transfer(transfer);
 }
 
-static void activate_run_state(struct fpi_ssm *ssm)
+static void activate_run_state(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct upektc_dev *upekdev = dev->priv;
+	struct fp_img_dev *dev = user_data;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(_dev);
 	int r;
 
-	switch (ssm->cur_state) {
+	switch (fpi_ssm_get_cur_state(ssm)) {
 	case WRITE_INIT:
 	{
-		struct libusb_transfer *transfer = libusb_alloc_transfer(0);
-		if (!transfer) {
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
-			return;
-		}
-		libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_out,
+		struct libusb_transfer *transfer = fpi_usb_alloc();
+
+		libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_out,
 			(unsigned char*)upekdev->setup_commands[upekdev->init_idx].cmd,
 			UPEKTC_CMD_LEN, write_init_cb, ssm, BULK_TIMEOUT);
 		r = libusb_submit_transfer(transfer);
 		if (r < 0) {
 			libusb_free_transfer(transfer);
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
+			fpi_ssm_mark_failed(ssm, -ENOMEM);
 		}
 	}
 	break;
 	case READ_DATA:
 	{
-		struct libusb_transfer *transfer = libusb_alloc_transfer(0);
+		struct libusb_transfer *transfer = fpi_usb_alloc();
 		unsigned char *data;
 
-		if (!transfer) {
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
-			break;
-		}
-
 		data = g_malloc(upekdev->setup_commands[upekdev->init_idx].response_len);
-		libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_in, data,
+		libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_in, data,
 			upekdev->setup_commands[upekdev->init_idx].response_len,
 			read_init_data_cb, ssm, BULK_TIMEOUT);
 
@@ -146,20 +135,20 @@ static void activate_run_state(struct fpi_ssm *ssm)
 		if (r < 0) {
 			g_free(data);
 			libusb_free_transfer(transfer);
-			fpi_ssm_mark_aborted(ssm, r);
+			fpi_ssm_mark_failed(ssm, r);
 		}
 	}
 	break;
 	}
 }
 
-static void activate_sm_complete(struct fpi_ssm *ssm)
+static void activate_sm_complete(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	fp_dbg("status %d", ssm->error);
-	fpi_imgdev_activate_complete(dev, ssm->error);
+	struct fp_img_dev *dev = user_data;
+	fp_dbg("status %d", fpi_ssm_get_error(ssm));
+	fpi_imgdev_activate_complete(dev, fpi_ssm_get_error(ssm));
 
-	if (!ssm->error)
+	if (!fpi_ssm_get_error(ssm))
 		start_finger_detection(dev);
 	fpi_ssm_free(ssm);
 }
@@ -186,7 +175,7 @@ static int finger_present(unsigned char *img, size_t len, int sum_threshold)
 static void finger_det_data_cb(struct libusb_transfer *transfer)
 {
 	struct fp_img_dev *dev = transfer->user_data;
-	struct upektc_dev *upekdev = dev->priv;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	unsigned char *data = transfer->buffer;
 
 	if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
@@ -219,7 +208,7 @@ static void finger_det_cmd_cb(struct libusb_transfer *t)
 	unsigned char *data;
 	int r;
 	struct fp_img_dev *dev = t->user_data;
-	struct upektc_dev *upekdev = dev->priv;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	if (t->status != LIBUSB_TRANSFER_COMPLETED) {
 		fp_dbg("req transfer status %d\n", t->status);
@@ -231,14 +220,9 @@ static void finger_det_cmd_cb(struct libusb_transfer *t)
 		goto exit_free_transfer;
 	}
 
-	transfer = libusb_alloc_transfer(0);
-	if (!transfer) {
-		fpi_imgdev_session_error(dev, -ENOMEM);
-		goto exit_free_transfer;
-	}
-
+	transfer = fpi_usb_alloc();
 	data = g_malloc(IMAGE_SIZE);
-	libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_in, data, IMAGE_SIZE,
+	libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_in, data, IMAGE_SIZE,
 		finger_det_data_cb, dev, BULK_TIMEOUT);
 
 	r = libusb_submit_transfer(transfer);
@@ -254,21 +238,17 @@ exit_free_transfer:
 static void start_finger_detection(struct fp_img_dev *dev)
 {
 	int r;
-	struct upektc_dev *upekdev = dev->priv;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 	struct libusb_transfer *transfer;
-	fp_dbg("");
+	G_DEBUG_HERE();
 
 	if (upekdev->deactivating) {
 		complete_deactivation(dev);
 		return;
 	}
 
-	transfer = libusb_alloc_transfer(0);
-	if (!transfer) {
-		fpi_imgdev_session_error(dev, -ENOMEM);
-		return;
-	}
-	libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_out,
+	transfer = fpi_usb_alloc();
+	libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_out,
 		(unsigned char *)scan_cmd, UPEKTC_CMD_LEN,
 		finger_det_cmd_cb, dev, BULK_TIMEOUT);
 	r = libusb_submit_transfer(transfer);
@@ -288,31 +268,31 @@ enum capture_states {
 
 static void capture_cmd_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
+	fpi_ssm *ssm = transfer->user_data;
 
 	if ((transfer->status == LIBUSB_TRANSFER_COMPLETED) &&
 		(transfer->length == transfer->actual_length)) {
 		fpi_ssm_next_state(ssm);
 	} else {
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 	}
 	libusb_free_transfer(transfer);
 }
 
 static void capture_read_data_cb(struct libusb_transfer *transfer)
 {
-	struct fpi_ssm *ssm = transfer->user_data;
-	struct fp_img_dev *dev = ssm->priv;
+	fpi_ssm *ssm = transfer->user_data;
+	struct fp_img_dev *dev = fpi_ssm_get_user_data(ssm);
 	unsigned char *data = transfer->buffer;
 	struct fp_img *img;
 
 	if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
 		fp_dbg("request is not completed, %d", transfer->status);
-		fpi_ssm_mark_aborted(ssm, -EIO);
+		fpi_ssm_mark_failed(ssm, -EIO);
 		goto out;
 	} else if (transfer->length != transfer->actual_length) {
 		fp_dbg("expected %d, sent %d bytes", transfer->length, transfer->actual_length);
-		fpi_ssm_mark_aborted(ssm, -EPROTO);
+		fpi_ssm_mark_failed(ssm, -EPROTO);
 		goto out;
 	}
 
@@ -326,65 +306,57 @@ out:
 	libusb_free_transfer(transfer);
 }
 
-static void capture_run_state(struct fpi_ssm *ssm)
+static void capture_run_state(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct upektc_dev *upekdev = dev->priv;
+	struct fp_img_dev *dev = user_data;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(_dev);
 	int r;
 
-	switch (ssm->cur_state) {
+	switch (fpi_ssm_get_cur_state(ssm)) {
 	case CAPTURE_WRITE_CMD:
 	{
-		struct libusb_transfer *transfer = libusb_alloc_transfer(0);
-		if (!transfer) {
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
-			return;
-		}
-		libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_out,
+		struct libusb_transfer *transfer = fpi_usb_alloc();
+
+		libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_out,
 			(unsigned char *)scan_cmd, UPEKTC_CMD_LEN,
 			capture_cmd_cb, ssm, BULK_TIMEOUT);
 		r = libusb_submit_transfer(transfer);
 		if (r < 0) {
 			libusb_free_transfer(transfer);
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
+			fpi_ssm_mark_failed(ssm, -ENOMEM);
 		}
 	}
 	break;
 	case CAPTURE_READ_DATA:
 	{
-		struct libusb_transfer *transfer = libusb_alloc_transfer(0);
+		struct libusb_transfer *transfer = fpi_usb_alloc();
 		unsigned char *data;
 
-		if (!transfer) {
-			fpi_ssm_mark_aborted(ssm, -ENOMEM);
-			break;
-		}
-
 		data = g_malloc(IMAGE_SIZE);
-		libusb_fill_bulk_transfer(transfer, dev->udev, upekdev->ep_in, data, IMAGE_SIZE,
+		libusb_fill_bulk_transfer(transfer, fpi_dev_get_usb_dev(FP_DEV(dev)), upekdev->ep_in, data, IMAGE_SIZE,
 			capture_read_data_cb, ssm, BULK_TIMEOUT);
 
 		r = libusb_submit_transfer(transfer);
 		if (r < 0) {
 			g_free(data);
 			libusb_free_transfer(transfer);
-			fpi_ssm_mark_aborted(ssm, r);
+			fpi_ssm_mark_failed(ssm, r);
 		}
 	}
 	break;
 	};
 }
 
-static void capture_sm_complete(struct fpi_ssm *ssm)
+static void capture_sm_complete(fpi_ssm *ssm, struct fp_dev *_dev, void *user_data)
 {
-	struct fp_img_dev *dev = ssm->priv;
-	struct upektc_dev *upekdev = dev->priv;
+	struct fp_img_dev *dev = user_data;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(_dev);
 
 	fp_dbg("Capture completed");
 	if (upekdev->deactivating)
 		complete_deactivation(dev);
-	else if (ssm->error)
-		fpi_imgdev_session_error(dev, ssm->error);
+	else if (fpi_ssm_get_error(ssm))
+		fpi_imgdev_session_error(dev, fpi_ssm_get_error(ssm));
 	else
 		start_finger_detection(dev);
 	fpi_ssm_free(ssm);
@@ -392,26 +364,24 @@ static void capture_sm_complete(struct fpi_ssm *ssm)
 
 static void start_capture(struct fp_img_dev *dev)
 {
-	struct upektc_dev *upekdev = dev->priv;
-	struct fpi_ssm *ssm;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	fpi_ssm *ssm;
 
 	if (upekdev->deactivating) {
 		complete_deactivation(dev);
 		return;
 	}
 
-	ssm = fpi_ssm_new(dev->dev, capture_run_state, CAPTURE_NUM_STATES);
-	fp_dbg("");
-	ssm->priv = dev;
+	ssm = fpi_ssm_new(FP_DEV(dev), capture_run_state, CAPTURE_NUM_STATES, dev);
+	G_DEBUG_HERE();
 	fpi_ssm_start(ssm, capture_sm_complete);
 }
 
 static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 {
-	struct upektc_dev *upekdev = dev->priv;
-	struct fpi_ssm *ssm = fpi_ssm_new(dev->dev, activate_run_state,
-		ACTIVATE_NUM_STATES);
-	ssm->priv = dev;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	fpi_ssm *ssm = fpi_ssm_new(FP_DEV(dev), activate_run_state,
+		ACTIVATE_NUM_STATES, dev);
 	upekdev->init_idx = 0;
 	fpi_ssm_start(ssm, activate_sm_complete);
 	return 0;
@@ -419,15 +389,15 @@ static int dev_activate(struct fp_img_dev *dev, enum fp_imgdev_state state)
 
 static void dev_deactivate(struct fp_img_dev *dev)
 {
-	struct upektc_dev *upekdev = dev->priv;
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
 
 	upekdev->deactivating = TRUE;
 }
 
 static void complete_deactivation(struct fp_img_dev *dev)
 {
-	struct upektc_dev *upekdev = dev->priv;
-	fp_dbg("");
+	struct upektc_dev *upekdev = FP_INSTANCE_DATA(FP_DEV(dev));
+	G_DEBUG_HERE();
 
 	upekdev->deactivating = FALSE;
 	fpi_imgdev_deactivate_complete(dev);
@@ -439,32 +409,33 @@ static int dev_init(struct fp_img_dev *dev, unsigned long driver_data)
 	int r;
 	struct upektc_dev *upekdev;
 
-	r = libusb_claim_interface(dev->udev, 0);
+	r = libusb_claim_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
 	if (r < 0) {
 		fp_err("could not claim interface 0: %s", libusb_error_name(r));
 		return r;
 	}
 
-	dev->priv = upekdev = g_malloc0(sizeof(struct upektc_dev));
+	upekdev = g_malloc0(sizeof(struct upektc_dev));
+	fp_dev_set_instance_data(FP_DEV(dev), upekdev);
 	switch (driver_data) {
 	case UPEKTC_2015:
 		upekdev->ep_in = UPEKTC_EP_IN;
 		upekdev->ep_out = UPEKTC_EP_OUT;
 		upekdev->setup_commands = upektc_setup_commands;
-		upekdev->setup_commands_len = array_n_elements(upektc_setup_commands);
+		upekdev->setup_commands_len = G_N_ELEMENTS(upektc_setup_commands);
 		upekdev->sum_threshold = UPEKTC_SUM_THRESHOLD;
 		break;
 	case UPEKTC_3001:
 		upekdev->ep_in = UPEKET_EP_IN;
 		upekdev->ep_out = UPEKET_EP_OUT;
 		upekdev->setup_commands = upeket_setup_commands;
-		upekdev->setup_commands_len = array_n_elements(upeket_setup_commands);
+		upekdev->setup_commands_len = G_N_ELEMENTS(upeket_setup_commands);
 		upekdev->sum_threshold = UPEKET_SUM_THRESHOLD;
 		break;
 	default:
-		fp_err("Device variant %d is not known\n", driver_data);
+		fp_err("Device variant %lu is not known\n", driver_data);
 		g_free(upekdev);
-		dev->priv = NULL;
+		fp_dev_set_instance_data(FP_DEV(dev), NULL);
 		return -ENODEV;
 		break;
 	}
@@ -474,8 +445,10 @@ static int dev_init(struct fp_img_dev *dev, unsigned long driver_data)
 
 static void dev_deinit(struct fp_img_dev *dev)
 {
-	g_free(dev->priv);
-	libusb_release_interface(dev->udev, 0);
+	void *user_data;
+	user_data = FP_INSTANCE_DATA(FP_DEV(dev));
+	g_free(user_data);
+	libusb_release_interface(fpi_dev_get_usb_dev(FP_DEV(dev)), 0);
 	fpi_imgdev_close_complete(dev);
 }
 
