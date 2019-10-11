@@ -216,7 +216,7 @@ void fpi_imgdev_report_finger_status(struct fp_img_dev *imgdev,
 	struct fp_img *img = imgdev->acquire_img;
 	struct fp_print_data *print;
 	struct fp_print_data_item *item;
-	print = fpi_print_data_new(imgdev->dev);
+	print = fpi_print_data_new(FP_DEV(imgdev));
 	item = fpi_print_data_item_new(sizeof(struct xyt_struct));
 	print->type = PRINT_DATA_NBIS_MINUTIAE;
 	print->prints = g_slist_prepend(print->prints, item);
